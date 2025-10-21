@@ -1,0 +1,917 @@
+##########This script is for prepossessing TN-Seq data of PF3D7-API data from JHKS Sean Prigge group
+###For the 202410 and 202411 data Only Read1 has 7bp index, Read2 no adapter and no TTAA(can not show properly paired reads and PCR duplicates with high confidence), directly followed with genomic seq or plasmid seq, extracting mapped R1 reads samtools command flag is  X64
+###For 202412 data, both read1 and read2 have 150bp, can show properly paired reads 
+###Sean group data index is in Read2 
+
+1 transfer data from Markov to Chimera
+
+ssh sidaye@markov.math.umb.edu
+Password:vA4v=FvxMT0528%
+
+!!! mv */* <taget_path> #move every fastq file under the folder
+ls ./* #check everything under the folder
+########################################################################
+/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq
+########################################################################
+If the fastq files are in Illumina BaseSpace
+Use the BaseSpace downloader to download fastq file:run->file icon->download->run->fastq
+########################################################################
+Optional:transfer the data from base space to HPC server
+#############################Transfer data to markov by Basespace Cli command#############
+1. Install Cli on Markov
+2. authenticate the account and follow the indications
+bs auth login
+3. Download by run id(will give the original .bci files)
+bs download run --id 288502307 --output ./
+optional：Project will give the fastq file after analysis
+bs download project --id 439743413 --output ./
+bs download project -n "250721_Spri" --extension fastq.gz --output /mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/fastq_original
+
+##Take out all the fastq.gz files from current directory
+
+find . -type f -name "*.fastq.gz" -exec mv {} . \;
+
+########################################################################
+###create the folders needed in the downstream analysis
+mkdir Genome  Original  R_output  bed  demultiplex  fastq  fastq_all_filtered  fastqc  fastqc_after_trim  log  mappedR1  sam  sam_Read1_only  scripts  statistics
+
+2. Identify the theoretical TTAA sites across the genome
+
+3. Generate countmatrix template
+#Turn gff file into gtf file
+#Intersect files
+bedtoos intersect -a -b -wa -wb > .bed !!!must use gtf file instead of gff file
+bedtools intersect -a /Users/sidaye/Documents/R/API_TnSeq/Output/PF3D7_theo_TTAA_R_modified_final.bed -b ./PlasmoDB-63_Pfalciparum3D7.gtf -wa -wb > TTAAhits_R_gtf_include_contigs.bed
+
+
+
+4. Concatenate the samples from different lanes
+####Move all fastq files the place under one directory
+find /path/to/search -type f -name "*.fastq.gz" -exec mv {} /path/to/target \;
+
+cat 060424SPri-Pool_S1_L001_R1_001.fastq.gz 060424SPri-Pool_S1_L002_R1_001.fastq.gz 060424SPri-Pool_S1_L003_R1_001.fastq.gz 060424SPri-Pool_S1_L004_R1_001.fastq.gz > ./fastq/Rep1_combined_R1.fastq.gz
+
+5. fastqc_beforetrim  #go to logs files to submit the slurm script 
+../scripts/fastqc1.sh 
+
+6. #create sample list in fastq folder for batch processing
+Go to log directory
+ls ../fastq/ > ../fastq/sample.list.txt
+###Alternatively,(highly recommended)##
+ls ../fastq | grep -oP '.*_L001(?=_R[1])' > ../fastq/sample.list.txt
+
+Edit sample names in emacs
+7. Create index_name.txt files in ../fastq
+index_Rep1.txt
+CGTGATT	D0_Rep1
+ACATCGT	D12_Rep1
+GCCTAAT	D18_M_Rep1
+TGGTCAT	D24_M_Rep1
+CACTGTT	D18_C_Rep1
+ATTGGCT	D24_C_Rep1
+
+index_Rep2.txt
+CGTGATT	D0_Rep2
+ACATCGT	D12_Rep2
+GCCTAAT	D18_M_Rep2
+TGGTCAT	D24_M_Rep2
+CACTGTT	D18_C_Rep2
+ATTGGCT	D24_C_Rep2
+
+index_Rep34.txt
+CGTGATT	D12_Rep3
+ACATCGT	D18_M_Rep3
+GCCTAAT	D24_M_Rep3
+TGGTCAT	D18_C_Rep3
+CACTGTT	D24_C_Rep3
+ATTGGCT	D12_Rep4
+CAGATCT	D18_M_Rep4
+ACTTGAT	D24_M_Rep4
+GATCAGT	D18_C_Rep4
+TAGCTTT	D24_C_Rep4
+
+8. Demultiplex and trim adaptors on 5' Read2 by cutadapt
+#####Install the latest version of cutadapt (>3.0 version)
+srun -p Intel -n 4 -N 1 --mem-per-cpu=1gb -t 01:00:00 --pty bash
+module purge
+module load anaconda3-2020.07-gcc-10.2.0-z5oxtnq
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+source /share/apps/linux-centos8-cascadelake/gcc-10.2.0/anaconda3-2020.07-z5oxtnq27xljqkd6w2scuy36na4wi7ee/etc/profile.d/conda.sh
+conda activate /home/sida.ye001/py3.9Condaenv
+conda install bioconda::cutadapt
+cutadapt --version
+
+../scripts/cutadapt_all_demultiplex2.sh
+FASTQ_FILE_PATH="/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/"
+FASTQ_FILE_DIR="fastq"
+OUTPUT_DIR="/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/demultiplex"
+INDEX_name="index"
+####Provide a name strings for index                                                                                                                                                                       
+
+
+echo "using $SLURM_CPUS_ON_NODE CPUs"
+echo `date`
+
+cd ${FASTQ_FILE_PATH}${FASTQ_FILE_DIR}/
+
+
+file="sample.list.txt"
+while IFS= read -r line
+do
+    R1file="$line"_R1.fastq.gz
+    R2file="$line"_R2.fastq.gz
+    NAME=$(echo "$line" | cut -d'_' -f1)
+    echo ${R1file} ${R2file}
+    echo ${OUTPUT_DIR}
+
+    # sample_names=$(awk '{print $2}' "$INDEX_name"_"$NAME".txt | tr -d '\n ')                                                                                                                             
+    # Load sample names into an array                                                                                                                                                                      
+    readarray -t sample_names < <(awk '{print $2}' "$INDEX_name"_"$NAME".txt)
+    readarray -t index_seq < <(awk '{print $1}' "$INDEX_name"_"$NAME".txt)
+    for i in "${!sample_names[@]}"; do
+        sample="${sample_names[i]}"
+        index_seq="${index_seq[i]}"
+         sbatch --job-name="cutadapt_all" --partition=Intel6240,Intel6248,math --ntasks=8 --mem=16000 --time=04:00:00 cutadapt -j 8 -e 1 --no-indels -G ^${index_seq} --quality-base=33 -m 17 -q 20 --discard-untrimmed --pair-filter=any -o ${OUTPUT_DIR}/${sample}_R1_trimmed.fastq.gz -p ${OUTPUT_DIR}/${sample}_R2_trimmed.fastq.gz $R1file $R2file
+    done
+    #sbatch --job-name="cutadapt_all" --partition=Intel6240,Intel6248,math --ntasks=8 --mem=16000 --time=04:00:00 cutadapt -j 8 -e 1 --no-indels -G ^file:barcodes_${NAME}.fasta --discard-untrimmed -o $q\
+_options -p $p_options $R1file $R2file                                                                                                                                                                     
+done < "$file"
+
+echo "Finish Run"
+echo "end time is `date`"
+
+
+#Check the number of samples and if the samples are consistent with info in sample sheet
+ls | wc -l
+
+#！！！check the name of fastq file to see if it is consistent with SampleID，this Novaseq run fastq file SXXX is inconsistent with SampleID
+#but please be careful that every batch,fastq file SXXX is sometimes inconsistent with SampleID
+#Make sure the number of samples in list.txt is the same as SampleSheet
+#Make sure no duplicated names
+
+9 fastqc after trim
+../scripts/fastqc2.sh 
+
+10 filter out the empty plasmid sequence by R scripts
+/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/demultiplex
+Plasmid sequence:
+TTAA GAATTCTAGATTTAATAAATATGTTCTTATATATAATGAGAAATAAATATTTAACATATGTTTAAAAAGAAAAATTTAAGATTTACATGATTAGGAATAA
+Final matching seq:
+GAATTCTAGATTTAAT
+
+11######Create trimmed.list.txt
+##go to demultiplex folder
+ls ./ > trimmed.list.txt
+emacs trimmed.list.txt ##make sure every sample's name is correct
+mv /mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/demultiplex/trimmed.list.txt /mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/statistics/Input/
+mv /mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/demultiplex/trimmed.list.txt /mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/statistics/Input/
+rm /mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/demultiplex/trimmed.list.txt~
+rm /mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/demultiplex/trimmed.list.txt~
+
+12Use /home/sida.ye001/Tnseq/R_scripts/fastq_filters_all_final_Chimera_PfTPN202410.R to filter out empty plasmid and calculate statistics
+srun -p Intel -n 4 -N 1 --mem-per-cpu=5gb -t 01:00:00 --pty bash
+module purge
+module load anaconda3-2020.07-gcc-10.2.0-z5oxtnq
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+source /share/apps/linux-centos8-cascadelake/gcc-10.2.0/anaconda3-2020.07-z5oxtnq27xljqkd6w2scuy36na4wi7ee/etc/profile.d/conda.sh
+conda activate /home/sida.ye001/rCondaenv
+R
+
+Ctrl+D #quit the R
+conda deactivate #quit condo environment 
+
+
+
+library(tidyverse)
+library(IRanges)
+library(Biostrings)
+library(ShortRead)
+library(openxlsx)
+library(stringr)
+library(parallel)
+
+###########Sometimes, needs to modified every time since the rule of naming of fastq file may different, and samplesheet may different
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+
+Sample_name <- read.csv('/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/statistics/Input/SampleSheet_202411_NextSeq_PfTNSeq.csv', header = FALSE)
+n <- 7  # n= number of samples in the samplesheet, not include undetermined fastq files, will add it later on
+
+Sample_name <- Sample_name[16:(16+n),]
+
+##add a row to consider undetermined as a sample
+#Sample_name <- data.frame(lapply(Sample_name, as.character), stringsAsFactors=FALSE)
+#Sample_name[nrow(Sample_name) + 1,] = c(0, 'Undetermined', 0, 0, 0, 0, 0, 0, 'Undetermined')
+
+
+#input trimmed fastq directory
+#point to the path of directory
+input.dir.trimmed.fastq <- "/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/demultiplex/"
+#list files
+count.files <- list.files(input.dir.trimmed.fastq)
+num.total.files <- length(count.files)
+
+#To check duplicated samples in SampleSheet
+#rule out Samples not exists or we do not need
+duplicated(Sample_name$V2[2:length(Sample_name$V2)])
+
+###double check real files in trim folder
+#sample_trim <-read.table("/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/statistics/Input/trimmed.list.txt")
+#sample_trim<-unique(unlist(lapply(strsplit(as.character(sample_trim$V1), '_R'), '[[', 1)))
+
+#######change n for the final unique files including undetermined fastq files in reality we attain
+n <- 7
+#####################need to check SampleSheet format each time, and according to corresponding sheet to adjust
+file.info <- data.frame(Sample_Name = Sample_name$V2[2:length(Sample_name$V2)],
+                        Sample_description = Sample_name$V7[2:length(Sample_name$V2)],
+                        Sample_ID = Sample_name$V1[2:length(Sample_name$V2)],
+                        filename = rep(NA, n))
+
+#copy sample name
+Sample.name <- file.info$Sample_Name
+#customized according to the the rule of naming of fastq file and samplesheet
+#file.info$Sample_Name <- lapply(strsplit(file.info$Sample_Name, '_'), '[[',1)
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+
+
+#index.file.name <- lapply(strsplit(count.files, '_'), '[[', 2)
+#remove the files we do not want, remember to remove .txt~ files after removing it to statistics input folder
+#count.files <- count.files[-95]
+index.file.name <-unlist(lapply(count.files,str_sub,-32,-21)) ####Need to be changed every time/batch, since the real name in fastq samples may be different from names in sample sheet
+
+#should modified customizedly according to different runs' naming of samples, since sometimes the names of samples are too short or too long
+file.name.df <- data.frame(real.file.name = unique(index.file.name),
+                           order = 1:n
+
+)
+
+file.name.df <- file.name.df[order(file.name.df$order), ]
+file.info$filename <- file.name.df$real.file.name
+
+write.xlsx(file.info, "/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/statistics/Output/Info_sample_tranformation_table.xlsx")
+write.table(file.info$filename, "/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/statistics/Output/Sample_list.txt", row.names = F, quote = F, col.names = F)
+
+file.info <- file.info [rep(1:nrow(file.info), each=2), ]
+Readtype = rep(c('R1', 'R2'), num.total.files/2 )
+file.info <- file.info %>% transmute(file.info, Readtype = Readtype)
+
+
+samples <- as.character(file.name.df$real.file.name)
+
+statistics <- as.data.frame(matrix(nrow = 7, ncol =(length(samples)) ))
+colnames(statistics) <-file.name.df$real.file.name ####!!!
+
+output.dir.trimmed.filtered.fastq <- "/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/fastq_all_filtered/"
+
+
+#!!!!if rerun this for loop, please clean the output file
+
+#To remove undetermined_S0 sample in samples and statistics
+samples<-samples[-(n+1)]
+#statistics<-statistics[,-ncol(statistics)]
+
+for(i in 1:length(samples)){
+  input.dir.trimmed.fastq
+  sample_R1_name <- paste(samples[i], "R1_trimmed.fastq.gz", sep = "_")
+  sample_R2_name <- paste(samples[i], "R2_trimmed.fastq.gz", sep = "_")
+  R1 <- paste(input.dir.trimmed.fastq, sample_R1_name, sep = "")
+  R2 <- paste(input.dir.trimmed.fastq, sample_R2_name, sep = "")
+  R1.fastq <- readFastq(R1)
+  R2.fastq <- readFastq(R2)
+  SR1 <-sread(R1.fastq)
+  SR2 <-sread(R2.fastq)
+  if(length(SR1) == length(SR2)){
+    statistics[3, i] <- length(SR1)
+  }else{statistics[3, i] <- 'False' }
+#####Keep reads with TTAA
+  #SR1TTAA <- subseq(SR1, start = 1, end = 4)
+  #TTAA <- "TTAA"
+  #count0 <- vcountPattern(TTAA, SR1TTAA, fixed = TRUE)
+  #index_filter0 <- which(count0!=0)
+  #SR1_filter0 <- R1.fastq[index_filter0]
+  #SR2_filter0 <- R2.fastq[index_filter0]
+
+  #SR1_1 <- sread(SR1_filter0 )
+  #SR2_1 <- sread(SR2_filter0)
+  #if(length(SR1_1) == length(SR2_1)){
+  #  statistics[4, i] <- length(SR1_1)
+  #}else{statistics[4, i] <- 'False' }
+#SR1TTAA <- subseq(SR1, start = 1, end = 4)
+#  TTAA <- "TTAA"
+#  count0 <- vcountPattern(TTAA, SR1TTAA, fixed = TRUE)
+#  index_filter0 <- which(count0!=0)
+#  SR1_filter0 <- R1.fastq[index_filter0]
+#  SR2_filter0 <- R2.fastq[index_filter0]
+
+  #SR1_1 <- sread(SR1_filter0 )
+  #SR2_1 <- sread(SR2_filter0)
+#####filter out reads has plasmid sequence at 5' of Read1 
+  SR1_1 <-SR1
+  SR2_1 <-SR2
+  if(length(SR1_1) == length(SR2_1)){
+    statistics[4, i] <- length(SR1_1)
+  }else{statistics[4, i] <- 'False' }
+
+  SR1plasmid <- subseq(SR1_1, start = 1, end = 16)
+  plasmidseq1 <- "GAATTCTAGATTTAAT"
+  count1 <- vcountPattern(plasmidseq1, SR1plasmid, fixed = FALSE, max.mismatch = 2)
+  index_filter1 <- which(count1==0)
+  SR1_filter1 <- R1.fastq[index_filter1]
+  SR2_filter1 <- R2.fastq[index_filter1]
+  if(length(SR1_filter1) == length(SR2_filter1)){
+    statistics[5, i] <- length(SR1_filter1)
+  }else{statistics[4, i] <- 'False' }
+
+  writeFastq(SR1_filter1, paste(output.dir.trimmed.filtered.fastq, samples[i], "_R1_trimmed_filtered.fastq.gz", sep = ""), mode="w", full=FALSE, compress=TRUE)
+  writeFastq(SR2_filter1, paste(output.dir.trimmed.filtered.fastq, samples[i], "_R2_trimmed_filtered.fastq.gz", sep = ""), mode="w", full=FALSE, compress=TRUE)
+  cat(paste('processing file', samples[i]))
+  cat('\n')
+}
+
+write.xlsx(statistics, "/mathspace/data01/mathbio_lab/Tnseq/202411_API_Pf3D7_NextSeq/statistics/Output/Proportion_statistics_all.xlsx")
+
+13 change /home/sida.ye001/Tnseq/slurm_scripts, and run the script the filter empty plasmid reads
+Rscript fastq_filters_all_final_Chimera_PfTPN202410.R
+#go to log file: sbatch ../slurm_scripts/run_R_script_Tnseq_Condaenv.sh
+
+14 create genome index in BWA mem for plasmodium3D7
+mv ./Pf3D7* /mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/Genome/P.falciparum/
+
+15 Mapping the reads with BWA mem
+../fastq_all_filtered/ > ../fastq_all_filtered/Sample_list.txt
+Emacs ../fastq_all_filtered/Sample_list.txt
+cat ../fastq_all_filtered/Sample_list.txt
+D0_Rep1
+D0_Rep2
+D12_Rep1
+D12_Rep2
+D12_Rep3
+D12_Rep4
+D18_C_Rep1
+D18_C_Rep2
+D18_C_Rep3
+D18_C_Rep4
+D18_M_Rep1
+D18_M_Rep2
+D18_M_Rep3
+D18_M_Rep4
+D24_C_Rep1
+D24_C_Rep2
+D24_C_Rep3
+D24_C_Rep4
+D24_M_Rep1
+D24_M_Rep2
+D24_M_Rep3
+D24_M_Rep4
+../scripts/run_bwa_mem_Pf_all.sh 
+
+16 Remove PCR duplicates
+!!!!!!#Since in 202410/202411 round's Pf-TPN data, PCR duplicates can not be removed, so no PCR duplicates removal steps, please use run_samtools2.sh after running run_samtools.sh 
+
+mkdir /mathspace/data01/mathbio_lab/Tnseq/202502_API_Pf3D7_NextSeq/R_output/unmapped_goodReads_remove_duplicates_markdup
+mkdir /mathspace/data01/mathbio_lab/Tnseq/202502_API_Pf3D7_NextSeq/R_output/count_matrix/
+17 map the reads into countmatrix
+
+
+12 go to fastq files, grep cutadapt statistics by linux commands on Chimera
+cat slurm* | grep 'Total read pairs processed' > initial_reads.txt
+cat slurm* | grep 'Pairs written (passing filters)'> Passing_filters.txt
+###cat slurm* | grep 'Read 1 with adapter: ' > read1_with_adaptor.txt
+cat slurm* | grep 'Read 2 with adapter: ' > read1_with_adaptor.txt
+#cat slurm* | grep '_L001_R1_001.fastq.gz' > sample_order.txt
+cat slurm* | grep 'R1.fastq.gz' > sample_order.txt ####need to be changed based on samples names
+###optional: cat sta.txt | grep '_L001_R1_001.fastq.gz' > sample_order.txt
+###sed 's/Command line parameters: --pair-adapters -g TCAATTTTACGCAGACTATCTTTCTAGGG -G TCCCTACACGACGCTCTTCCGATCT --pair-filter=any --quality-base=33 -m 30 -q 20 --discard-untrimmed -o //g' sample_order02.txt > sample_order02.txt
+
+#move to statistics/Output/ folder
+cp sample_order.txt ../statistics/Output/
+cp Passing_filters.txt ../statistics/Output/
+cp initial_reads.txt ../statistics/Output/
+cp read1_with_adaptor.txt ../statistics/Output/
+
+
+12 preparation for running fastq_filters_all_final.R on HPC, install required R packages
+To run R script we need to make sure all R packages are installed.
+ 1) cd ~/ #go back to home directory
+ 2) srun -p Intel -n 4 -N 1 --mem-per-cpu=1gb -t 01:00:00 --pty bash #create an interactive session on chimera, notice that first we start on chimerahead server, but then we get into chimera09 for example. We should not do expensive computations on chimerahead
+ 3) #Now load some modules: R and gmake. gmake will let us install new packages
+module load r-4.0.3-gcc-10.2.0-wi7mlm6
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+
+ 4) #enter R, by directly type 
+R
+ 5) # install all the required R packages in interactive R on chimera
+
+ X) # exit R session
+q()
+
+Since it is not easy to install some packages such as tidyverse directly and it requires some other non-R dependencies,
+The alternative method is to run R script in Conda environment.
+##############################################conda environment setting on chimera
+ 1) cd ~/ #go back to home directory
+ 2) srun -p Intel -n 4 -N 1 --mem-per-cpu=1gb -t 01:00:00 --pty bash #create an interactive session on chimera, notice that first we start on chimerahead server, but then we get into chimera09 for example. We should not do expensive computations on chimerahead
+ 3) 
+module purge
+module load anaconda3-2020.07-gcc-10.2.0-z5oxtnq
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+source /share/apps/linux-centos8-cascadelake/gcc-10.2.0/anaconda3-2020.07-z5oxtnq27xljqkd6w2scuy36na4wi7ee/etc/profile.d/conda.sh
+
+ 4)If this is your first time using Conda, you need to initialize your shell with it. If not, skip this step and directly go to step 8)
+conda init bash
+ 5) exit the shell for changes to take effect, close and re-open your current shell 
+exit  # or Ctrl+D
+ 6)srun -p Intel -n 4 -N 1 --mem-per-cpu=1gb -t 01:00:00 --pty bash # now it become (base) [sida.ye001@chimera09 ~]$; indicating you are in your default 'base' environment. Start an interactive job again
+ 7)conda create -c conda-forge -p ./rCondaenv r-base=4.2.1 ## environment will be created in project directory；There will be no programs installed in this environment. ### the R version I installed is r-base=4.2.1
+ 8）#Activate the environment.
+conda activate ./rCondaenv
+#then it become (/home/sida.ye001/rCondaenv) [sida.ye001@chimera09 ~]$ 
+ 9) install install pre-compiled packages available in conda:
+conda install -c r r-dplyr
+
+ 10) #open R in conda
+R
+ 11) install.packages('XXX')
+
+#########################
+
+Create a new shell script (e.g., set_lc_ctype.sh) in the etc/conda/activate.d/ directory. 
+export LC_CTYPE="en_US.UTF-8"
+chmod +x set_lc_ctype.sh
+conda deactivate
+#########################
+#########################
+Reenter R in conda env after first time
+1)
+#srun -p Intel -n 4 -N 1 --mem-per-cpu=30gb -t 01:00:00 --pty bash
+srun -p Intel -n 4 -N 1 --mem-per-cpu=5gb -t 01:00:00 --pty bash
+module purge
+module load anaconda3-2020.07-gcc-10.2.0-z5oxtnq
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+source /share/apps/linux-centos8-cascadelake/gcc-10.2.0/anaconda3-2020.07-z5oxtnq27xljqkd6w2scuy36na4wi7ee/etc/profile.d/conda.sh
+conda activate /home/sida.ye001/rCondaenv
+R
+
+Ctrl+D #quit the R
+conda deactivate #quit condo environment 
+
+
+ 
+ 12) #To see a list of all your environments, use 
+conda list
+
+
+
+
+######trouble-shooting: if we find that a package can not be installed because of 'ERROR: failed to lock directory', go to /home/sida.ye001/R/x86_64-pc-linux-gnu-library/4.0 and remove the directory 00LOCK-<package>, go back to R session and reinstall the R packages
+
+
+
+13 move all the required files to 
+#go to ./trim folder
+# emacs to check and delete the line we do not want 
+ls > trimmed.list.txt
+mv ./trimmed.list.txt ../statistics/Input/
+
+
+trimmed.list.txt
+SampleSheet_20221212_SD_Bauercore_Miseq_Novaseq.csv
+
+/mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/statistics/Input
+
+
+
+14 ####!!!!undetermined.fastq file always cause problem, and will let us not get the proportion statistics files, so we should removed it in order to not cause problem.
+
+
+write R script for batch processing on Chimera, and write slurm script for submit Rscript: 
+/home/sida.ye001/Tnseq/slurm_scripts/run_R_script_Tnseq_Condaenv.sh
+
+#SBATCH -n 48                                                                                                                                                                     
+#SBATCH --account=math                                                                                                                                                            
+##SBATCH --qos=math_unlim                                                                                                                                                         
+#SBATCH --time=02-10:00:00                                                                                                                                                        
+#SBATCH --mem=512gb                                                                                                                                                               
+##SBATCH --partition=math                                                                                                                                                         
+#SBATCH --partition=Intel6240,Intel6248,math                                                                                                                                      
+#SBATCH --mail-user=sida.ye001@umb.edu     
+
+module purge
+module load anaconda3-2020.07-gcc-10.2.0-z5oxtnq
+module load gmake-4.3-gcc-10.2.0-vnkzpjr
+module load gcc-10.2.0-gcc-9.3.0-f3oaqv7
+source /share/apps/linux-centos8-cascadelake/gcc-10.2.0/anaconda3-2020.07-z5oxtnq27xljqkd6w2scuy36na4wi7ee/etc/profile.d/conda.sh
+conda activate /home/sida.ye001/rCondaenv
+export PATH=/home/sida.ye001/rCondaenv/bin:$PATH;
+
+echo "using $SLURM_CPUS_ON_NODE CPUs"
+echo `date`
+
+DIR="/home/sida.ye001/Tnseq/R_scripts/"
+
+cd $DIR
+
+Rscript fastq_filters_all_final_Chimera.R
+
+echo "Finish Run"
+echo "end time is `date`"
+
+
+16 get Proportion_statistics_all.xlsx 
+
+
+17 Create Sample_list.txt in fastq_all_filtered file
+#We already have Sample_list.txt in /mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/statistics/Output/Sample_list.txt
+#Copy to fastq_all_filtered file
+cp /mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/statistics/Output/Sample_list.txt /mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/fastq_all_filtered/Sample_list.txt
+
+
+
+18 cross mapping all the samples to Pk, Bd, Human genome, and No need to separate mapping, map all to Pk Babesia and human genome at the same time
+
+########optional: to use /mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_bwa_mem_XXXXXX_all_batchprocessing.sh for batch processing
+
+Map to human genome 
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_bwa_mem_allsamples2humangenome.sh 
+
+Map to Bd genome
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_bwa_mem_Bd_all.sh
+
+Map to Pk genome
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_bwa_mem_Pk_all.sh
+
+############################################for some amount of samples
+
+
+
+module load bwa-0.7.17-gcc-9.3.0-6zgicc2
+module load samtools-1.10-gcc-9.3.0-flukja5
+
+TRIM_DIR="/mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/fastq_all_filtered/" #!!!!!!point to fastq_all_filtered file
+SAM_DIR="/mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/sam/map_to_Bd/"
+
+
+INDX="/mathspace/data01/mathbio_lab/Tnseq/202207/Genome/B.divergens/Bdivergens1802A"
+
+echo "using $SLURM_CPUS_ON_NODE CPUs"
+echo `date`
+
+cd $TRIM_DIR
+
+for sample  in `cat Sample_list.txt` ;do
+
+    echo $sample                                                                                                                         \
+
+    JOBID=$sample".jid"
+    READ1=$sample"_R1_trimmed_filtered.fastq.gz"
+    READ2=$sample"_R2_trimmed_filtered.fastq.gz"
+    echo $READ1
+    echo $READ2
+    bwa mem  $INDX  $READ1  $READ2 -o  $SAM_DIR$sample.sam
+
+
+############################################for huge amount of samples(batch submit the script)
+Separate the Sample_list.txt into smaller parts and batch submit the script
+Mkdir part1 (put bam into it)
+Mkdir part22 (put other bam file for removing PCR duplicates into it)
+Mkdir mappedR1(put extract R1 into it)
+Mkdir bed( put all bed files into it)
+
+sinfo --all # to see the status and info of all partitions
+
+
+
+20 Remove PCR duplicates and get statistics
+/mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/sam/Bd_sample_to_Bd/
+/mathspace/data01/mathbio_lab/Tnseq/202212_Novaseq/sam/Pk_sample_to_Pk/
+
+!!!!!samtools need to be updated >1.10
+  1)Sam->.bam
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_view.sh
+Create a new folder map_sta_Bd/map_sta_Pk, copy all the bam file to new folder map_sta_Bd/map_sta_Pk
+Or mv other files except .bam to other folder after step11)
+
+
+  2)bam->sorted.bam (change a new folder map_sta_Bd/map_sta_Pk)
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_sort.sh
+
+
+  3)Samtools index (map_sta_Bd/map_sta_Pk)
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_indx.sh
+
+  4)Sam stat (map_sta_Bd/map_sta_Pk)
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_stat.sh
+
+
+#####The downstream steps are only for Pk_sample_to_Pk and Bd_sample_to_Bd#####
+##samtools collate command is used to rearrange a BAM or SAM file so that alignments with the same read name (or query name) are grouped together
+  5)Bam->.collate.bam pointed to the new folder
+
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_collate.sh
+
+
+  6)Collate->fixmate#
+The samtools fixmate command is used to clean up and adjust the information related to mate-pair alignments in BAM files, particularly for paired-end sequencing data.
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_fixmate.sh
+
+  7)Fixate->positionsort
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_fixmate_sort.sh
+
+
+  8)positionsort->markdup
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_markdup.sh
+
+
+  9)samtools markdup remove PCR duplicates
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_markdup_remove.sh
+Note: easy to cause core dumped, I thought it is due to low memory required
+
+
+  10)Samtools extract R1.bam
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_view_extract_mappedpairedRead1_for_markdup.sh
+
+
+  11)Samtools transform R1.bam to R1.bed, extracted 
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_bedtools_sortbam2bedm__all.sh
+Cat *bed| wc -l 
+
+  12)Samtools index Mapped.R1
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_indx_extracted_removed_mapped.sh
+
+  12)Get statistics of PCR duplicates
+
+go to mappedR1files
+ls *.mappedR1.sta.txt|xargs cat >  ../statistics/Output/PCRdup_stat/Pf.all.mappedR1.sta.txt
+go to Pf_to_Pf files
+ls *.markdupremoved.sta.txt|xargs cat >  ../../statistics/Output/PCRdup_stat/Pf.all.markdupremoved.sta.txt
+ls *.positionsort.sta.txt|xargs cat >  ../../statistics/Output/PCRdup_stat/Pf.all.positionsort.sta.txt
+
+#since the results of 
+samtools view -c XXX.bam 
+samtools view -c XXX.collate.bam 
+samtools view -c XXX.fixmate.bam 
+samtools view -c XXX.positionsort.bam
+samtools view -c XXX.markdup.bam
+Are the same but the size of .positionsort.bam is the smallest and this number is the same as the xxxx in total (QC-passed reads + QC-failed reads) in samtools stat .txt
+
+#!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!
+#!!!!!!!!!!!!!!!!!!
+#it seems that the number of reads in xxxx in total (QC-passed reads + QC-failed reads) in samtools stat .txt is not the same as the number of reads in the xxxxxxx.trimmed.filtered.fastq.gz ?????
+
+############calculate statistics of mappedR1/positionsort/markdupremoved/
+############calculate statistics of mappedR1/positionsort/markdupremoved/
+############calculate statistics of mappedR1/positionsort/markdupremoved/
+###go to Bd_to_Bd/Pk_to_Pk
+
+Input: mappedR1/
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_samView_sta_PCRdup_mappedR1.sh
+
+
+Input: positionsort.bam/ #
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_samView_sta_PCRdup_positionsort.sh
+Input: markdupremoved.bam/ #after removing PCR duplicates
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_samView_sta_PCRdup_markdupremoved.sh
+
+
+######
+module load bwa-0.7.17-gcc-9.3.0-6zgicc2
+module load samtools-1.10-gcc-9.3.0-flukja5
+
+
+DIR="/mathspace/data01/mathbio_lab/Tnseq/202305_Novaseq/sam/Bd_sample_to_Bd/"
+
+cd $DIR
+
+for f in $(ls $DIR | grep "sorted.bam"  | uniq); do
+    NAME=$(echo $f | cut -f 1 -d '.')
+    JOBID=$NAME".sam.jid"
+    echo $JOBID
+    echo $NAME
+    samtools view -c $DIR$NAME.mappedR1.sorted.bam > $DIR$NAME.mappedR1.sta.txt
+
+done
+######
+####merge all the statistics.txt files
+#####mkdir PCRdup_stat/ in statistics/Output/
+
+
+
+####No need to calculate bed files
+Input: bed #### bed files does not work since 
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_samView_sta_PCRdup_bed.sh
+ls *.txt|xargs cat > ./all.bed.Pk.sta.txt
+####No need to calculate bed files
+ 
+
+### optional: create new folder, and move all file except .bam, use the .bam to run sorted.bam->index-stat
+
+21 go to sam file for map_to_Bd/map_to_Pk/map_to_Human to see the statistics of mapping
+
+Go to map_to_Pk folder # please use ls *.txt|xargs cat > xxxx instead of cat *.txt, since cat *.txt will change the order of input samples
+ls *.txt|xargs cat > ../../statistics/Output/map_to_Bd.txt # !!!!!!!make sure the order is right
+Go to map_to_Bd folder
+ls *.txt|xargs cat > ../../statistics/Output/map_to_Pk.txt
+Go to map_to_Human folder
+ls *.txt|xargs cat > ../../statistics/Output/map_to_Human.txt
+
+Go to map_to_Pf folder|../../statistics/Output/
+ls *.txt|xargs cat > ../../statistics/Output/map_to_Pf.txt 
+
+Go to mapping_statistics folder
+cat map_to_Bd.txt | grep 'properly paired' > map_to_Bd_properlypaired.txt
+cat map_to_Pk.txt | grep 'properly paired' > map_to_Pk_properlypaired.txt
+cat map_to_Human.txt | grep 'properly paired' > map_to_Human_properlypaired.txt
+
+cat map_to_Pf.txt | grep 'properly paired' > map_to_Pf_properlypaired.txt
+cat map_to_Human.txt | grep 'properly paired' > map_to_Human_properlypaired.txt
+
+#####For no TTAA on Read1, and short R2 only(single-end)
+cat map_to_Human.txt | grep '0 mapped' > map_to_Human_mapped.txt
+cat map_to_Pf.txt | grep '0 mapped' > map_to_Pf_mapped.txt
+
+#####To get how many read1 in bed files, go to bed folder
+wc -l *.bed
+
+####！！！
+extracted properly paired reads and then removing PCR duplicates or removing PCR duplicates and then extracted properly paired reads
+
+Note:
+remapping PkTPN_SetB_WT2_day4_dated523_S84.sam since the first time mapping of this sample's sam file become a messy code
+
+22 add a step in 
+
+
+
+23 filtering out reads can not be assigned to UII identified in Reference genome
+#######use the bed files to filter out the reads in bam files
+samtools view -b -h -L bedfile.bed originalbam.bam > newbam.bam
+-b = Output as bed file
+-h = include header
+-L = only output alignments overlapping the input bed file
+
+
+22 merge bam files 
+
+Sort the merged bam files before running the python pysam script 
+
+samtools merge  -o ../merged17Bd_noPCRdup/merged17Bd_noPCRdup.mappedR1.sorted.bam *mappedR1.sorted.bam
+samtools merge -o ./merged70Pk_noPCRdup_final/merged70Pk_noPCRdup_final.mappedR1.sorted.bam *mappedR1.sorted.bam #sometimes, samtools merge doesn't work，samtools merge is wonky/segfaults sometimes.
+
+
+Get sample names for 70 Pk_no_perturbation samples
+ls *mappedR1.sorted.bam | cut -f 1 -d '.'| cat > 70Pksamplelist.txt
+
+23 sam index 
+/mathspace/data01/mathbio_lab/Tnseq/202207/scripts/run_sam_indx_extracted_mapped.sh 
+
+24 keep .bai file in the same file with merged.mappedR1.sorted.bam file and input in IGV
+
+#######################################################recognize TTAA by R instead of using homer
+Script path: 202207/Tnseq/counts_theo_Pk/counts_theor_prepare.R
+Pk_theo_TTAA__include_contigs_R_modified_final.bed
+
+
+25 To use ~/Tnseq/R_scripts/after_count_theo_reads_count_matrix_Bd_Chimera.R and ~/Tnseq/R_scripts/after_count_theo_reads_count_matrix_Pk_Chimera.R generate count matrix 
+
+####to create sample list for Bd: /mathspace/data01/mathbio_lab/Tnseq/202305_Novaseq/statistics/Output/Sample_list_Bd.txt
+####to create sample list for Pk: /mathspace/data01/mathbio_lab/Tnseq/202305_Novaseq/statistics/Output/Sample_list_Pk.txt
+
+########!!!!!!May need to rerun the 202305/after_count_theo_reads_count_matrix_Bd_Chimera.R since I mistakenly indicate the path to the unmapped reads of 202307 to 202305, the original unmapped folder in 202305 may be rewrite by the 202307 data
+
+###This is the order how samples are processed by cut adapt and generate the slurm.out
+
+CGTGATT	D0_Rep1
+ACATCGT	D12_Rep1
+GCCTAAT	D18_M_Rep1
+TGGTCAT	D24_M_Rep1
+CACTGTT	D18_C_Rep1
+ATTGGCT	D24_C_Rep1
+
+CGTGATT	D0_Rep2
+ACATCGT	D12_Rep2
+GCCTAAT	D18_M_Rep2
+TGGTCAT	D24_M_Rep2
+CACTGTT	D18_C_Rep2
+ATTGGCT	D24_C_Rep2
+
+CGTGATT	D12_Rep3
+ACATCGT	D18_M_Rep3
+GCCTAAT	D24_M_Rep3
+TGGTCAT	D18_C_Rep3
+CACTGTT	D24_C_Rep3
+ATTGGCT	D12_Rep4
+CAGATCT	D18_M_Rep4
+ACTTGAT	D24_M_Rep4
+GATCAGT	D18_C_Rep4
+TAGCTTT	D24_C_Rep4
+
+/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/bed/D0_Rep1.mapped.sorted.bed
+
+after_count_theo_reads_count_matrix_Pf_Chimera202410.R
+/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/R_output/count_matrix/
+/mathspace/data01/mathbio_lab/Tnseq/202410_API_Pf3D7_NextSeq/R_output/unmapped_goodReads_remove_duplicates_markdup/
+
+library(tidyverse)
+library(IRanges)
+library(Biostrings)
+library(ShortRead)
+library(openxlsx)
+library(stringr)
+library(parallel)
+
+###########Sometimes, needs to modified every time since the rule of naming of fastq file may different, and samplesheet may different
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+###########!!!!need to modified every time according to the the rule of naming of fastq file and samplesheet
+
+Sample_name <- read.csv('/mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/statistics/Input/SampleSheet_202508_NextSeq_PfTNSeq.csv', header = FALSE)
+n <- 48  # n= number of samples in the samplesheet, not include undetermined fastq files, will add it later on
+
+Sample_name <- Sample_name[16:(16+n),]
+
+##add a row to consider undetermined as a sample
+#Sample_name <- data.frame(lapply(Sample_name, as.character), stringsAsFactors=FALSE)
+#Sample_name[nrow(Sample_name) + 1,] = c(0, 'Undetermined', 0, 0, 0, 0, 0, 0, 'Undetermined')
+
+
+#input trimmed fastq directory
+#point to the path of directory
+input.dir.trimmed.fastq <- "/mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/demultiplex/"
+#list files
+count.files <- list.files(input.dir.trimmed.fastq)
+num.total.files <- length(count.files)
+
+#To check duplicated samples in SampleSheet
+#rule out Samples not exists or we do not need
+duplicated(Sample_name$V2[2:length(Sample_name$V2)])
+
+###double check real files in trim folder
+#sample_trim <-read.table("/mathspace/data01/mathbio_lab/Tnseq/202412_API_Pf3D7_NextSeq/statistics/Input/trimmed.list.txt")
+#sample_trim<-unique(unlist(lapply(strsplit(as.character(sample_trim$V1), '_R'), '[[', 1)))
+
+#######change n for the final unique files including undetermined fastq files in reality we attain
+n <- 48
+#####################need to check SampleSheet format each time, and according to corresponding sheet to adjust
+file.info <- data.frame(Sample_Name = Sample_name$V2[2:length(Sample_name$V2)],
+                        Sample_description = Sample_name$V7[2:length(Sample_name$V2)],
+                        Sample_ID = Sample_name$V1[2:length(Sample_name$V2)],
+                        filename = rep(NA, n))
+
+#copy sample name
+Sample.name <- file.info$Sample_Name
+#customized according to the the rule of naming of fastq file and samplesheet
+#file.info$Sample_Name <- lapply(strsplit(file.info$Sample_Name, '_'), '[[',1)
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+######make use of count.files, directly use the name of trimmed fastq files!!!!!
+
+
+#index.file.name <- lapply(strsplit(count.files, '_'), '[[', 2)
+#remove the files we do not want, remember to remove .txt~ files after removing it to statistics input folder
+#count.files <- count.files[-95]
+
+index.file.name <-unlist(lapply(count.files,str_sub,-45,-21)) ####Need to be changed every time/batch
+
+#should modified customizedly according to different runs' naming of samples, since sometimes the names of samples are too short or too long
+file.name.df <- data.frame(real.file.name = unique(index.file.name),
+                           order = 1:n
+
+)
+
+file.name.df <- file.name.df[order(file.name.df$order), ]
+file.info$filename <- file.name.df$real.file.name
+
+write.xlsx(file.info, "/mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/statistics/Output/Info_sample_tranformation_table.xlsx")
+write.table(file.info$filename, "/mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/statistics/Output/Sample_list.txt", row.names = F, quote = F, col.names \
+= F)
+
+file.info <- file.info [rep(1:nrow(file.info), each=2), ]
+Readtype = rep(c('R1', 'R2'), num.total.files/2 )
+file.info <- file.info %>% transmute(file.info, Readtype = Readtype)
+
+samples <- as.character(file.name.df$real.file.name)
+
+statistics <- as.data.frame(matrix(nrow = 7, ncol =(length(samples)) ))
+colnames(statistics) <-file.name.df$real.file.name ####!!!
+
+output.dir.trimmed.filtered.fastq <- "/mathspace/data01/mathbio_lab/Tnseq/202508_API_Pf3D7_NextSeq/fastq_all_filtered/"
+
+
+#!!!!if rerun this for loop, please clean the output file
+
+#To remove undetermined_S0 sample in samples and statistics
+samples<-samples[-(n+1)]
+#statistics<-statistics[,-ncol(statistics)]
+
+
+
