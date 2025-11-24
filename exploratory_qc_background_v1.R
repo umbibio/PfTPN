@@ -32,6 +32,10 @@ ctrl_samples <- sample_meta %>%
   filter(treatment == "Control", !is.na(day), day >= 14) %>%
   pull(new_name)
 
+# ctrl_samples <- sample_meta %>%
+#   filter( !is.na(day), day >= 14) %>%
+#   pull(new_name)
+
 length(ctrl_samples)
 print(ctrl_samples)
 

@@ -9,8 +9,8 @@ library(scales)
 #1 solve the problem of overlapped exons
 #2 repeat the GeneID and gene.description in exons only as well for the convenience of downstream analysis
 #3 add the antisense strand of overlapped exons to the tail of dataframe
-getwd()
-setwd('/Users/sidaye/Documents/R/API_TnSeq')
+#getwd()
+#setwd('/Users/sidaye/Documents/R/API_TnSeq')
 
 
 cm1 <- read.xlsx("./Input/count_matrix202412/counts.distri.Pf.all.xlsx")
@@ -33,7 +33,8 @@ cm <- cbind(cm,cm5[,12:ncol(cm5)])
 cm <- cbind(cm,cm6[,12:ncol(cm6)])
 colnames(cm)
 
-cm_tmp <- read.xlsx("./Output/count_matrix/Pf_count_matrix_202412_202502_202504_202505.xlsx")
+## Just used to extract TTAA sire location
+cm_tmp <- read.xlsx("./Output/count_matrix/Pf_count_matrix_all_Bg_removed_siteslevel_cpm_final.xlsx")
 
 cm_tmp <- cm_tmp[,1:11]
 cm <- cbind(cm_tmp, cm)
