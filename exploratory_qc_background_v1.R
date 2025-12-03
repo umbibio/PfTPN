@@ -41,7 +41,7 @@ print(ctrl_samples)
 
 ## look into exons only for control samples
 cm_ctrl <- cm %>% dplyr::filter(Location == "exon") %>% 
-  dplyr::select(GeneID, all_of(ctrl_samples))
+  dplyr::select(GeneID, all_of(ctrl_samples)) # contains('TC'); starts_with
 
 
 # Total insertions per gene
